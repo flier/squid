@@ -11,6 +11,12 @@ const val VAR_INT_2BYTE = 0x40
 const val VAR_INT_4BYTE = 0x80
 const val VAR_INT_8BYTE = 0xc0
 
+@Throws(IOException::class)
+fun BufferedSource.readVarUInt() = VarInt.read(this).toLong()
+
+@Throws(IOException::class)
+fun BufferedSink.writeVarUInt(n: VarInt) = n.write(this)
+
 data class VarInt(val n: ULong) {
     override operator fun equals(other: Any?) = when (other) {
         is VarInt -> n == other.n
@@ -27,6 +33,7 @@ data class VarInt(val n: ULong) {
 
     override fun hashCode()= n.hashCode()
 
+    fun toLong() = n.toLong()
     fun toULong() = n
 
     @Throws(IOException::class, IllegalArgumentException::class)
