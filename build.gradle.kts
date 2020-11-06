@@ -14,17 +14,22 @@ dependencies {
     implementation("com.squareup.okio:okio:2.9.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.6.0")
 }
-tasks.withType<KotlinCompile>() {
+tasks.withType<KotlinCompile> {
     kotlinOptions {
         jvmTarget = "1.8"
-        freeCompilerArgs += "-Xopt-in=kotlin.ExperimentalUnsignedTypes"
+        freeCompilerArgs += listOf(
+            "-Xinline-classes",
+            "-Xopt-in=kotlin.ExperimentalUnsignedTypes"
+        )
     }
 }
-tasks.withType<Test>() {
+tasks.withType<Test> {
     useJUnitPlatform()
-    beforeTest(closureOf<TestDescriptor> {
-        logger.lifecycle("Running test: " + this.name)
-    })
+    beforeTest(
+        closureOf<TestDescriptor> {
+            logger.lifecycle("Running test: " + this.name)
+        }
+    )
 }
 application {
     mainClassName = "MainKt"

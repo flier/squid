@@ -1,6 +1,10 @@
 package squid
 
-typealias ConnectionID = ByteArray
+inline class ConnectionID(val id: ByteArray) {
+    val size: Int
+        get() = id.size
+}
+
 typealias StreamID = Long
 typealias PacketNumber = Long
 typealias SequenceNumber = Long

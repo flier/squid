@@ -42,10 +42,26 @@ interface Packet : Writable {
 
         fun short(dstConnID: ConnectionID, packetNumber: PacketNumber, payload: Buffer)
     }
+
+    companion object {
+        @Throws(IOException::class)
+        fun read(source: BufferedSource, handler: Packet.Handler) = PacketReader(source, handler).nextPacket()
+    }
 }
 
 interface Header : Writable {
     val packetNumberLength: Int
+
+    companion object {
+        @Throws(IOException::class)
+        fun read(source: BufferedSource) = source.run {
+            if (peek().readByte().toUByte() contains QUIC_PACKET_FLAG_LONG_FORM) {
+                LongHeader.read(this)
+            } else {
+                ShortHeader.read(this)
+            }
+        }
+    }
 }
 
 data class LongHeader(
@@ -54,9 +70,9 @@ data class LongHeader(
     @JvmField val dstConnID: ConnectionID,
     @JvmField val srcConnID: ConnectionID,
 ) : Header {
-    fun getType() = ((flags and QUIC_PACKET_FLAG_TYPE_MASK) ushr QUIC_PACKET_FLAG_TYPE_SHIFT).toInt()
-    fun hasFixedBit(): Boolean = flags contains QUIC_PACKET_FLAG_FIXED
-    fun isVersionNegotiation(): Boolean = version == 0U
+    val packetType = ((flags and QUIC_PACKET_FLAG_TYPE_MASK) ushr QUIC_PACKET_FLAG_TYPE_SHIFT).toInt()
+    val fixedBit = flags contains QUIC_PACKET_FLAG_FIXED
+    val isVersionNegotiation = version == 0U
     override val packetNumberLength = (flags and QUIC_PACKET_FLAG_PACKET_NUMBER_LENGTH_MASK).toInt() + 1
 
     override val size: Int by lazy {
@@ -87,8 +103,8 @@ data class ShortHeader(
     @JvmField val flags: UByte,
     @JvmField val dstConnID: ConnectionID,
 ) : Header {
-    fun isSpin() = flags contains QUIC_PACKET_FLAG_SPIN
-    fun isKeyPhase() = flags contains QUIC_PACKET_FLAG_KEY_PHASE
+    val spin = flags contains QUIC_PACKET_FLAG_SPIN
+    val keyPhase = flags contains QUIC_PACKET_FLAG_KEY_PHASE
     override val packetNumberLength = (flags and QUIC_PACKET_FLAG_PACKET_NUMBER_LENGTH_MASK).toInt() + 1
 
     override val size: Int by lazy {
@@ -98,11 +114,8 @@ data class ShortHeader(
     @Throws(IOException::class)
     override fun writeTo(sink: BufferedSink) = sink.run {
         writeByte(flags.toInt())
-        write(dstConnID)
+        writeConnectionID(dstConnID)
     }
-
-    @Throws(IOException::class)
-    fun BufferedSink.writeShortHeader() = writeTo(this)
 
     companion object {
         @Throws(IOException::class)
@@ -179,17 +192,18 @@ data class InitialPacket(
     @JvmField val payload: Buffer,
 ) : Packet {
     override val size: Int by lazy {
-        header.size +
-                1 + if (token == null) {
-            0
-        } else {
-            VarInt.sizeOf(token.size.toLong()) + token.size
-        } +
+        header.size + 1 +
+                if (token == null) {
+                    0
+                } else {
+                    VarInt.sizeOf(token.size.toLong()) + token.size
+                } +
                 VarInt.sizeOf(payload.size) +
                 header.packetNumberLength +
                 payload.size.toInt()
     }
 
+    @Throws(IOException::class)
     override fun writeTo(sink: BufferedSink) = sink.run {
         header.writeTo(sink)
         writeToken(token)
@@ -202,12 +216,7 @@ data class InitialPacket(
     companion object {
         @Throws(IOException::class)
         fun read(source: BufferedSource, header: LongHeader) = source.run {
-            val tokenLen = readVarUInt().toLong()
-            val token = if (tokenLen == 0L) {
-                null
-            } else {
-                readByteArray(tokenLen)
-            }
+            val token = readToken()
             val length = readVarUInt()
             val packetNumber = readPacketNumber(header)
             val payload = Buffer()
@@ -224,12 +233,10 @@ data class ZeroRTTPacket(
     @JvmField val payload: Buffer,
 ) : Packet {
     override val size: Int by lazy {
-        header.size +
-                VarInt.sizeOf(payload.size) +
-                header.packetNumberLength +
-                payload.size.toInt()
+        header.size + VarInt.sizeOf(payload.size) + header.packetNumberLength + payload.size.toInt()
     }
 
+    @Throws(IOException::class)
     override fun writeTo(sink: BufferedSink) = sink.run {
         header.writeTo(sink)
         writeVarUInt(payload.size)
@@ -257,12 +264,10 @@ data class HandshakePacket(
     @JvmField val payload: Buffer,
 ) : Packet {
     override val size: Int by lazy {
-        header.size +
-                VarInt.sizeOf(payload.size) +
-                header.packetNumberLength +
-                payload.size.toInt()
+        header.size + VarInt.sizeOf(payload.size) + header.packetNumberLength + payload.size.toInt()
     }
 
+    @Throws(IOException::class)
     override fun writeTo(sink: BufferedSink) = sink.run {
         header.writeTo(sink)
         writeVarUInt(payload.size)
@@ -290,6 +295,7 @@ data class RetryPacket(
 ) : Packet {
     override val size = header.size + token.size
 
+    @Throws(IOException::class)
     override fun writeTo(sink: BufferedSink) = sink.run {
         header.writeTo(sink)
         write(token)
@@ -312,14 +318,14 @@ class PacketReader(
 
     @Throws(IOException::class)
     fun nextPacket() {
-        when (val header = source.readHeader()) {
+        when (val header = Header.read(source)) {
             is LongHeader -> header.run {
-                if (isVersionNegotiation()) {
+                if (isVersionNegotiation) {
                     VersionNegotiationPacket.read(source, header).run {
                         handler.versionNegotiation(dstConnID, srcConnID, supportedVersions)
                     }
                 } else {
-                    when (getType()) {
+                    when (packetType) {
                         QUIC_PACKET_INITIAL -> InitialPacket.read(source, header).run {
                             handler.initial(dstConnID, srcConnID, token, packetNumber, payload)
                         }
@@ -344,35 +350,27 @@ class PacketReader(
     }
 }
 
-fun BufferedSource.readHeader() = if (peek().readByte().toUByte() contains QUIC_PACKET_FLAG_LONG_FORM) {
-    LongHeader.read(this)
-} else {
-    ShortHeader.read(this)
-}
+@Throws(IOException::class)
+fun BufferedSource.readConnectionID() = ConnectionID(readByteArray(readByte().toUByte().toLong()))
 
 @Throws(IOException::class)
-fun BufferedSource.readConnectionID(): ConnectionID {
-    val len = readByte().toUByte().toLong()
-    return readByteArray(len)
-}
-
-@Throws(IOException::class)
-fun BufferedSink.writeConnectionID(connectionID: ConnectionID) = writeByte(connectionID.size).write(connectionID)
+fun BufferedSink.writeConnectionID(connectionID: ConnectionID) = writeByte(connectionID.size).write(connectionID.id)
 
 @Throws(IOException::class, IllegalArgumentException::class)
-fun BufferedSource.readPacketNumber(header: Header): PacketNumber = when (header.packetNumberLength) {
-    1 -> readByte().toUByte().toLong()
-    2 -> readShort().toUShort().toLong()
-    3 -> ((readByte().toUByte().toUInt() shl 16) + readShort().toUShort()).toLong()
-    4 -> readInt().toUInt().toLong()
-    else -> throw IllegalArgumentException("packet number length")
-}
+fun BufferedSource.readPacketNumber(header: Header): PacketNumber =
+    (1..header.packetNumberLength).fold(0L, { acc, _ -> acc + readByte().toUByte().toLong() })
 
 @Throws(IOException::class)
 fun BufferedSink.writePacketNumber(pn: PacketNumber) = when {
     pn < Byte.MAX_VALUE.toLong() -> writeByte(pn.toInt())
     pn < Short.MAX_VALUE.toLong() -> writeShort(pn.toInt())
     else -> writeInt(pn.toInt())
+}
+
+@Throws(IOException::class, IllegalArgumentException::class)
+fun BufferedSource.readToken() = when (val len = readVarUInt()) {
+    0L -> null
+    else -> readByteArray(len)
 }
 
 @Throws(IOException::class)

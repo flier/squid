@@ -114,6 +114,11 @@ interface Frame : Writable {
 
         fun handshakeDone() {}
     }
+
+    companion object {
+        @Throws(IOException::class)
+        fun read(source: BufferedSource, handler: Handler) = FrameReader(source, handler).nextFrame()
+    }
 }
 
 data class Ack(
@@ -226,9 +231,7 @@ data class StopSending(
     @JvmField val errorCode: ErrorCode,
 ) : Frame {
     override val size: Int by lazy {
-        FRAME_TYPE_SIZE +
-                VarInt.sizeOf(streamID) +
-                VarInt.sizeOf(errorCode)
+        FRAME_TYPE_SIZE + VarInt.sizeOf(streamID) + VarInt.sizeOf(errorCode)
     }
 
     @Throws(IOException::class)
@@ -253,10 +256,7 @@ data class Crypto(
     @JvmField val data: Buffer,
 ) : Frame {
     override val size: Int by lazy {
-        FRAME_TYPE_SIZE +
-                VarInt.sizeOf(offset) +
-                VarInt.sizeOf(length) +
-                data.size.toInt()
+        FRAME_TYPE_SIZE + VarInt.sizeOf(offset) + VarInt.sizeOf(length) + data.size.toInt()
     }
 
     @Throws(IOException::class)
@@ -286,9 +286,7 @@ data class NewToken(
     @JvmField val token: Token,
 ) : Frame {
     override val size: Int by lazy {
-        FRAME_TYPE_SIZE +
-                VarInt.sizeOf(token.size.toLong()) +
-                token.size
+        FRAME_TYPE_SIZE + VarInt.sizeOf(token.size.toLong()) + token.size
     }
 
     @Throws(IOException::class)
@@ -534,7 +532,10 @@ data class NewConnectionID(
     @JvmField val statelessResetToken: Token,
 ) : Frame {
     override val size: Int by lazy {
-        FRAME_TYPE_SIZE + VarInt.sizeOf(sequenceNumber) + VarInt.sizeOf(retirePriorTo) + QUIC_STATELESS_RESET_TOKEN_LENGTH
+        FRAME_TYPE_SIZE +
+                VarInt.sizeOf(sequenceNumber) +
+                VarInt.sizeOf(retirePriorTo) +
+                QUIC_STATELESS_RESET_TOKEN_LENGTH
     }
 
     @Throws(IOException::class)
@@ -693,91 +694,62 @@ class FrameReader(
 
     @Throws(IOException::class)
     fun nextFrame() {
-        source.run {
-            when (peekFrameType()) {
-                QUIC_FRAME_PADDING -> handler.padding()
-                QUIC_FRAME_PING -> handler.ping()
-                QUIC_FRAME_ACK, QUIC_FRAME_ACK_1 -> {
-                    val (largestAcknowledged, ackDelay, firstAckBlock, ackBlocks, ecn) = Ack.read(source)
-                    handler.ack(largestAcknowledged, ackDelay, firstAckBlock, ackBlocks, ecn)
-                }
-                QUIC_FRAME_RESET_STREAM -> {
-                    val (streamID, errorCode, finalSize) = ResetStream.read(source)
-                    handler.resetStream(streamID, errorCode, finalSize)
-                }
-                QUIC_FRAME_STOP_SENDING -> {
-                    val (streamID, errorCode) = StopSending.read(source)
-                    handler.stopSending(streamID, errorCode)
-                }
-                QUIC_FRAME_CRYPTO -> {
-                    val (offset, length, data) = Crypto.read(source)
-                    handler.crypto(offset, length, data)
-                }
-                QUIC_FRAME_NEW_TOKEN -> {
-                    val (token) = NewToken.read(source)
-                    handler.newToken(token)
-                }
-                QUIC_FRAME_STREAM,
-                QUIC_FRAME_STREAM_1,
-                QUIC_FRAME_STREAM_2,
-                QUIC_FRAME_STREAM_3,
-                QUIC_FRAME_STREAM_4,
-                QUIC_FRAME_STREAM_5,
-                QUIC_FRAME_STREAM_6,
-                QUIC_FRAME_STREAM_7 -> {
-                    val (fin, streamID, offset, data) = Stream.read(source)
-                    handler.stream(fin, streamID, offset, data)
-                }
-                QUIC_FRAME_MAX_DATA -> {
-                    val (maximumData) = MaxData.read(source)
-                    handler.maxData(maximumData)
-                }
-                QUIC_FRAME_MAX_STREAM_DATA -> {
-                    val (streamID, maximumData) = MaxStreamData.read(source)
-                    handler.maxStreamData(streamID, maximumData)
-                }
-                QUIC_FRAME_MAX_STREAMS,
-                QUIC_FRAME_MAX_STREAMS_1 -> {
-                    val (bidirectionalStreams, maximumStreams) = MaxStreams.read(source)
-                    handler.maxStreams(bidirectionalStreams, maximumStreams)
-                }
-                QUIC_FRAME_DATA_BLOCKED -> {
-                    val (dataLimit) = DataBlocked.read(source)
-                    handler.dataBlocked(dataLimit)
-                }
-                QUIC_FRAME_STREAM_DATA_BLOCKED -> {
-                    val (streamID, dataLimit) = StreamDataBlocked.read(source)
-                    handler.streamDataBlocked(streamID, dataLimit)
-                }
-                QUIC_FRAME_STREAMS_BLOCKED,
-                QUIC_FRAME_STREAMS_BLOCKED_1 -> {
-                    val (bidirectionalStreams, streamLimit) = StreamsBlocked.read(source)
-                    handler.streamsBlocked(bidirectionalStreams, streamLimit)
-                }
-                QUIC_FRAME_NEW_CONNECTION_ID -> {
-                    val (sequenceNumber, retirePriorTo, connectionID, statelessResetToken) = NewConnectionID.read(source)
-                    handler.newConnectionID(sequenceNumber, retirePriorTo, connectionID, statelessResetToken)
-                }
-                QUIC_FRAME_RETIRE_CONNECTION_ID -> {
-                    val (sequenceNumber) = RetireConnectionID.read(source)
-                    handler.retireConnectionID(sequenceNumber)
-                }
-                QUIC_FRAME_PATH_CHALLENGE -> {
-                    val (data) = PathChallenge.read(source)
-                    handler.pathChallenge(data)
-                }
-                QUIC_FRAME_PATH_RESPONSE -> {
-                    val (data) = PathResponse.read(source)
-                    handler.pathResponse(data)
-                }
-                QUIC_FRAME_CONNECTION_CLOSE,
-                QUIC_FRAME_CONNECTION_CLOSE_1 -> {
-                    val (errorCode, frameType, reasonPhrase) = ConnectionClose.read(source)
-                    handler.connectionClose(errorCode, frameType, reasonPhrase)
-                }
-                QUIC_FRAME_HANDSHAKE_DONE -> {
-                    handler.handshakeDone()
-                }
+        when (source.peekFrameType()) {
+            QUIC_FRAME_PADDING -> handler.padding()
+            QUIC_FRAME_PING -> handler.ping()
+            QUIC_FRAME_ACK, QUIC_FRAME_ACK_1 -> Ack.read(source).run {
+                handler.ack(largestAcknowledged, ackDelay, firstAckBlock, ackBlocks, ecn)
+            }
+            QUIC_FRAME_RESET_STREAM -> ResetStream.read(source).run {
+                handler.resetStream(streamID, errorCode, finalSize)
+            }
+            QUIC_FRAME_STOP_SENDING -> StopSending.read(source).run {
+                handler.stopSending(streamID, errorCode)
+            }
+            QUIC_FRAME_CRYPTO -> Crypto.read(source).run {
+                handler.crypto(offset, length, data)
+            }
+            QUIC_FRAME_NEW_TOKEN -> NewToken.read(source).run {
+                handler.newToken(token)
+            }
+            in QUIC_FRAME_STREAM..QUIC_FRAME_STREAM_7 -> Stream.read(source).run {
+                handler.stream(fin, streamID, offset, data)
+            }
+            QUIC_FRAME_MAX_DATA -> MaxData.read(source).run {
+                handler.maxData(maximumData)
+            }
+            QUIC_FRAME_MAX_STREAM_DATA -> MaxStreamData.read(source).run {
+                handler.maxStreamData(streamID, maximumData)
+            }
+            QUIC_FRAME_MAX_STREAMS, QUIC_FRAME_MAX_STREAMS_1 -> MaxStreams.read(source).run {
+                handler.maxStreams(bidirectionalStreams, maximumStreams)
+            }
+            QUIC_FRAME_DATA_BLOCKED -> DataBlocked.read(source).run {
+                handler.dataBlocked(dataLimit)
+            }
+            QUIC_FRAME_STREAM_DATA_BLOCKED -> StreamDataBlocked.read(source).run {
+                handler.streamDataBlocked(streamID, streamDataLimit)
+            }
+            QUIC_FRAME_STREAMS_BLOCKED, QUIC_FRAME_STREAMS_BLOCKED_1 -> StreamsBlocked.read(source).run {
+                handler.streamsBlocked(bidirectionalStreams, streamLimit)
+            }
+            QUIC_FRAME_NEW_CONNECTION_ID -> NewConnectionID.read(source).run {
+                handler.newConnectionID(sequenceNumber, retirePriorTo, connectionID, statelessResetToken)
+            }
+            QUIC_FRAME_RETIRE_CONNECTION_ID -> RetireConnectionID.read(source).run {
+                handler.retireConnectionID(sequenceNumber)
+            }
+            QUIC_FRAME_PATH_CHALLENGE -> PathChallenge.read(source).run {
+                handler.pathChallenge(data)
+            }
+            QUIC_FRAME_PATH_RESPONSE -> PathResponse.read(source).run {
+                handler.pathResponse(data)
+            }
+            QUIC_FRAME_CONNECTION_CLOSE, QUIC_FRAME_CONNECTION_CLOSE_1 -> ConnectionClose.read(source).run {
+                handler.connectionClose(errorCode, frameType, reasonPhrase)
+            }
+            QUIC_FRAME_HANDSHAKE_DONE -> {
+                handler.handshakeDone()
             }
         }
     }

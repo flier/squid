@@ -6,10 +6,20 @@ import java.io.IOException
 
 const val VAR_INT_MASK = 0xc0
 const val VAR_INT_VALUE = 0x3f
+
 const val VAR_INT_1BYTE = 0x00
 const val VAR_INT_2BYTE = 0x40
 const val VAR_INT_4BYTE = 0x80
 const val VAR_INT_8BYTE = 0xc0
+
+const val VAR_INT_2BYTE_PREFIX = 0x4000UL
+const val VAR_INT_4BYTE_PREFIX = 0x8000_0000UL
+const val VAR_INT_8BYTE_PREFIX = 0xc000_0000_0000_0000UL
+
+const val VAR_INT_1BYTE_MAX = 0x40UL
+const val VAR_INT_2BYTE_MAX = 0x4000UL
+const val VAR_INT_4BYTE_MAX = 0x4000_0000UL
+const val VAR_INT_8BYTE_MAX = 0x4000_0000_0000_0000UL
 
 @Throws(IOException::class)
 fun BufferedSource.readVarUInt() = VarInt.read(this).toLong()
@@ -20,32 +30,17 @@ fun BufferedSink.writeVarUInt(vararg args: Long): BufferedSink {
     return this
 }
 
-data class VarInt(val n: ULong) {
-    override operator fun equals(other: Any?) = when (other) {
-        is VarInt -> n == other.n
-        is ULong -> n == other
-        is Long -> n == other
-        is UInt -> n == other
-        is Int -> n == other
-        is UShort -> n == other
-        is Short -> n == other
-        is UByte -> n == other
-        is Byte -> n == other
-        else -> false
-    }
-
-    override fun hashCode()= n.hashCode()
-
+inline class VarInt(val n: ULong) {
     fun toLong() = n.toLong()
     fun toULong() = n
 
     @Throws(IOException::class, IllegalArgumentException::class)
     fun write(s: BufferedSink): BufferedSink {
         when {
-            n <= 0x3fUL -> s.writeByte(n.toInt())
-            n <= 0x3fffUL -> s.writeShort((VAR_INT_2BYTE shl 8) or n.toInt())
-            n <= 0x3fffffffUL -> s.writeInt((VAR_INT_4BYTE shl 24) or n.toInt())
-            n <= 0x3fffffffffffffffUL -> s.writeLong(((VAR_INT_8BYTE.toULong() shl 56) or n).toLong())
+            n < VAR_INT_1BYTE_MAX -> s.writeByte(n.toInt())
+            n < VAR_INT_2BYTE_MAX -> s.writeShort((n or VAR_INT_2BYTE_PREFIX).toInt())
+            n < VAR_INT_4BYTE_MAX -> s.writeInt((n or VAR_INT_4BYTE_PREFIX).toInt())
+            n < VAR_INT_8BYTE_MAX -> s.writeLong((n or VAR_INT_8BYTE_PREFIX).toLong())
             else -> throw IllegalArgumentException("out of range")
         }
         return s
@@ -55,10 +50,10 @@ data class VarInt(val n: ULong) {
         @Throws(IllegalArgumentException::class)
         fun sizeOf(n: Long) = n.toULong().let {
             when {
-                it <= 0x3fUL -> 1
-                it <= 0x3fffUL -> 2
-                it <= 0x3fffffffUL -> 4
-                it <= 0x3fffffffffffffffUL -> 8
+                it < VAR_INT_1BYTE_MAX -> UByte.SIZE_BYTES
+                it < VAR_INT_2BYTE_MAX -> UShort.SIZE_BYTES
+                it < VAR_INT_4BYTE_MAX -> UInt.SIZE_BYTES
+                it < VAR_INT_8BYTE_MAX -> ULong.SIZE_BYTES
                 else -> throw IllegalArgumentException("out of range")
             }
         }
@@ -67,18 +62,17 @@ data class VarInt(val n: ULong) {
         fun read(s: BufferedSource): VarInt {
             val b = s.readByte().toUByte()
             val len = when ((b and VAR_INT_MASK).toInt()) {
-                VAR_INT_1BYTE -> 1
-                VAR_INT_2BYTE -> 2
-                VAR_INT_4BYTE -> 4
-                VAR_INT_8BYTE -> 8
+                VAR_INT_1BYTE -> UByte.SIZE_BYTES
+                VAR_INT_2BYTE -> UShort.SIZE_BYTES
+                VAR_INT_4BYTE -> UInt.SIZE_BYTES
+                VAR_INT_8BYTE -> ULong.SIZE_BYTES
                 else -> 0
             }
-            var value = (b and VAR_INT_VALUE).toULong()
-            for (i in 2..len) {
-                value = (value shl 8) or s.readByte().toUByte().toULong()
-            }
-            return VarInt(value)
+            val n = (2..len).fold((b and VAR_INT_VALUE).toULong(), { acc, _ ->
+                (acc shl UByte.SIZE_BITS) or s.readByte().toUByte().toULong()
+            })
+
+            return VarInt(n)
         }
     }
 }
-
