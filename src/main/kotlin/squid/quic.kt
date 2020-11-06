@@ -6,7 +6,6 @@ typealias PacketNumber = Long
 typealias SequenceNumber = Long
 typealias Token = ByteArray
 
-
 /**
  * QUIC Transport Error codes defined by the QUIC Transport RFC.
  */

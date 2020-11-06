@@ -15,7 +15,10 @@ const val VAR_INT_8BYTE = 0xc0
 fun BufferedSource.readVarUInt() = VarInt.read(this).toLong()
 
 @Throws(IOException::class)
-fun BufferedSink.writeVarUInt(n: VarInt) = n.write(this)
+fun BufferedSink.writeVarUInt(vararg args: Long): BufferedSink {
+    args.forEach { VarInt(it.toULong()).write(this) }
+    return this
+}
 
 data class VarInt(val n: ULong) {
     override operator fun equals(other: Any?) = when (other) {
@@ -49,6 +52,17 @@ data class VarInt(val n: ULong) {
     }
 
     companion object {
+        @Throws(IllegalArgumentException::class)
+        fun sizeOf(n: Long) = n.toULong().let {
+            when {
+                it <= 0x3fUL -> 1
+                it <= 0x3fffUL -> 2
+                it <= 0x3fffffffUL -> 4
+                it <= 0x3fffffffffffffffUL -> 8
+                else -> throw IllegalArgumentException("out of range")
+            }
+        }
+
         @Throws(IOException::class)
         fun read(s: BufferedSource): VarInt {
             val b = s.readByte().toUByte()

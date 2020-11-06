@@ -1,7 +1,9 @@
 package squid
 
 import okio.Buffer
+import okio.BufferedSink
 import okio.BufferedSource
+import java.io.IOException
 
 infix fun Byte.and(mask: Int): UByte = (toInt() and mask).toUByte()
 infix fun UByte.and(mask: Int): UByte = (toInt() and mask).toUByte()
@@ -15,4 +17,11 @@ fun UByteArray.source(): BufferedSource {
     val buf = Buffer()
     buf.write(toByteArray())
     return buf
+}
+
+interface Writable {
+    val size: Int
+
+    @Throws(IOException::class)
+    fun writeTo(sink: BufferedSink): BufferedSink
 }
