@@ -31,6 +31,3 @@ tasks.withType<Test> {
         }
     )
 }
-application {
-    mainClassName = "MainKt"
-}
